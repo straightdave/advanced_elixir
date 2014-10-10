@@ -1,7 +1,7 @@
 elixir进阶（Mix和OTP入门）
 =========================
 
-1. [Mix简介]()
+1. [Mix简介](1-intro-to-mix.md)
 2. [Agent]()
 3. [GenServer]()
 4. [GenEvent]()
