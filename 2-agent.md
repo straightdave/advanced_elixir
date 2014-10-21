@@ -42,7 +42,7 @@ iex> Agent.stop(agent)
 这里用某个初始状态（一个空列表）启动了一个agent。然后执行了一个命令来修改这个状态，加了一个新的列表项到头部。最终，获取整个列表。一旦我们用完agent，我们需要调用```Agent.stop/1```来终止agent进程。
 
 现在我们用Agent来实现```KV.Bucket```。在开始之前，我们先来写个测试。新建文件```test/kv/bucket_test.exs```（回想一下，```.exs```文件），内容是：
-```
+```elixir
 defmodule KV.BucketTest do
   use ExUnit.Case, async: true
 
@@ -63,7 +63,7 @@ end
 不管是不是异步执行的，很明显我们的测试会失败，原因是一个功能都没实现。
 
 为了修复失败的用例，我们来创建文件```lib/kv/bucket.ex```，输入以下内容。你可以不看下方的代码，自己尝试着创建agent的行为：
-```
+```elixir
 defmodule KV.Bucket do
   @doc """
   Starts a new bucket.
@@ -93,7 +93,7 @@ end
 在为```KV.Bucket```加入更多功能之前，先讲一讲ExUnit的回调函数。你可能已经想到，每一个```KV.Bucket```的测试用例都需要一个bucket，它要在该测试用例启动时设置好，还要在该测试用例结束时停止。幸运的是，ExUnit支持回调函数，使我们跳过这重复机械的任务。
 
 让我们使用回调机制重写刚才的测试：
-```
+```elixir
 defmodule KV.BucketTest do
   use ExUnit.Case, async: true
 
@@ -115,7 +115,7 @@ end
 
 注意我们需要一个机制来传递创建好的```bucket```的pid给测试用例。我们使用_测试上下文_来达到这个目的。
 当在回调函数里返回```{:ok,bucket: bucket}```时，ExUnit会把该返回值元祖（字典）的第二个元素放进测试上下文中。测试上下文是一个图，我们可以在每条测试用例的定义中匹配它，从而获取这个上下文的值，从而提供给用例中的代码块使用：
-```
+```elixir
 test "stores values by key", %{bucket: bucket} do
   # `bucket` is now the bucket from the setup block
 end
@@ -125,7 +125,46 @@ end
 
 ## 2.4-其它Agent行为
 
+除了“读取”或者“修改”agent的状态，agent还允许我们使用一个函数```Agent.get_and_update/2```“读取修改”它的状态。
+我们用这个函数来实现删除功能---从bucket中删除一个值，并返回该值：
+```elixir
+@doc """
+Deletes `key` from `bucket`.
 
+Returns the current value of `key`, if `key` exists.
+"""
+def delete(bucket, key) do
+  Agent.get_and_update(bucket, &HashDict.pop(&1, key))
+end
+```
+
+现在轮到你来给上面的代码写个测试啦。同时，你也可以读读Agent模块的文档，获取更多信息。
+
+## 2.5-Agent中的C/S模式
+
+在去到下一章之前，让我们讨论一下agent中的C/S模式。先来展开刚刚写好的```delete/2```函数：
+```elixir
+def delete(bucket, key) do
+  Agent.get_and_update(bucket, fn dict->
+    HashDict.pop(dict, key)
+  end)
+end
+```
+
+在方法中我们传递给agent的任何东西，都会出现在agent的进程里。在这里，因为agent进程负责接收和回复我们的消息，可以说，agent进程就是个服务器。方法之外的任何东西，都看成是在客户端的范围内。
+
+这个区别很重要。如果有大量的工作要做，你必须考虑这个工作是放在客户端还是在服务器上执行。比如：
+```elixir
+def delete(bucket, key) do
+  Agent.get_and_update(bucket, fn dict->
+    HashDict.pop(dict, key)
+  end)
+end
+```
+
+当服务器上执行一个很耗时的工作，所有对该服务器的请求都必须等待知道这个工作完成。这会造成有些客户端超时。
+
+下一章我们会探索GenServer通用服务器，它在概念上对服务器与客户端的隔离更加明显。
 
 
 
