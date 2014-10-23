@@ -181,35 +181,112 @@ end
 
 ## 3.3-需要监控
 
+至此，我们的注册表完成的差不多了。剩下的问题是这个注册表在有bucket崩溃的时候会失去时效。
+比如增加一个一下测试来暴露这个问题：
+```elixir
+test "removes buckets on exit", %{registry: registry} do
+  KV.Registry.create(registry, "shopping")
+  {:ok, bucket} = KV.Registry.lookup(registry, "shopping")
+  Agent.stop(bucket)
+  assert KV.Registry.lookup(registry, "shopping") == :error
+end
+```
 
+这个测试会在最后一个断言处失败。因为当我们停止了bucket进程后，该bucket名字还存在于注册表中。
 
+为了解决这个bug，我们需要注册表能够监视它派生出的每一个bucket进程。一旦我们创建了监视器，注册表将收到每个bucket退出的通知。
+这样它就可以清理bucket映射字典了。
 
+我们先在命令行中玩弄一下监视机制。启动```iex -S mix```：
+```elixir
+iex> {:ok, pid} = KV.Bucket.start_link
+{:ok, #PID<0.66.0>}
+iex> Process.monitor(pid)
+#Reference<0.0.0.551>
+iex> Agent.stop(pid)
+:ok
+iex> flush()
+{:DOWN, #Reference<0.0.0.551>, :process, #PID<0.66.0>, :normal}
+```
 
+注意```Process.monitor(pid)```返回一个唯一的引用，使我们可以通过这个引用找到其指代的监视器发来的消息。
+在我们停止agent之后，我们可以用```flush()```函数刷新所有消息，此时会收到一个```:DOWN```消息，内含一个监视器返回的引用。它表示有个bucket进程退出，原因是```:normal```。
 
+现在让我们重新实现下服务器回调函数。
+首先，将GenServer的状态改成两个字典：一个用来存储```name->pid```映射关系，另一个存储```ref->name```关系。
+然后在```handle_cast/2```中加入监视器，并且实现一个```handle_info/2```回调函数用来保存监视消息。
+下面是修改后完整的服务器调用函数：
+```elixir
+## Server callbacks
 
+def init(:ok) do
+  names = HashDict.new
+  refs  = HashDict.new
+  {:ok, {names, refs}}
+end
 
+def handle_call({:lookup, name}, _from, {names, _} = state) do
+  {:reply, HashDict.fetch(names, name), state}
+end
 
+def handle_call(:stop, _from, state) do
+  {:stop, :normal, :ok, state}
+end
 
+def handle_cast({:create, name}, {names, refs}) do
+  if HashDict.get(names, name) do
+    {:noreply, {names, refs}}
+  else
+    {:ok, pid} = KV.Bucket.start_link()
+    ref = Process.monitor(pid)
+    refs = HashDict.put(refs, ref, name)
+    names = HashDict.put(names, name, pid)
+    {:noreply, {names, refs}}
+  end
+end
 
+def handle_info({:DOWN, ref, :process, _pid, _reason}, {names, refs}) do
+  {name, refs} = HashDict.pop(refs, ref)
+  names = HashDict.delete(names, name)
+  {:noreply, {names, refs}}
+end
 
+def handle_info(_msg, state) do
+  {:noreply, state}
+end
+```
 
+我们没有修改任何客户端API而是稍微修改了服务器的实现。这就体现出了GenServer将客户端与服务器隔离开的好处。
 
+最后，不同于其他回调函数，我们定义了一个“捕捉所有消息”的```handle_info/2```的函数子句（可参考《入门》，其意类似重载的函数的一条实现）。它丢弃那些不知道也用不着的消息。下面一节来解释下WHY。
 
+## 3.4-call，cast还是info？
 
+到目前为止，我们已经使用了三个服务器回调函数：```handle_call/3```，```handle_cast/2```和```handle_info/2```。何时使用哪个，其实很直白：  
+1. ```handle_call/3```用来处理同步请求。这是默认的处理方式，因为等待服务器回复是十分有用的“反向压力（backpressure，涉及IO优化，请自行搜索）”机制。
+2. ```handle_cast/2```用来处理异步请求，当你无所谓要不要个回复时。一个cast请求甚至不保证服务器收到了该请求，因此请有节制地使用。例如，我们定义的```create/2```函数应该使用call的，而我们用cast只是为了演示目的。
+3. ```handle_info```用来接收和处理服务器收到的既不是```GenServer.call/3```也不是```GenServer.cast/2```的请求。它可以接受是以普通进程身份通过```send/2```收到的消息或者其它消息。监视器发来的```:DOWN```消息就是个极好的例子。
 
+因为任何消息，包括通过```send/2```发送的消息，回去到```handle_info/2```处理，因此便会有很多你不需要的消息跑进服务器。
+如果不定义一个“捕捉所有消息”的函数子句，这些消息会导致我们的监督者进程（supervisor）崩溃，因为没有函数子句匹配它们。
 
+我们不需要为```handle_call/3```和```handle_cast/2```担心这个情况，因为它们能接受的请求都是通过GenServer的API发送的，要是出了毛病就是程序员自己犯错。
 
+## 3.5-监视器还是链接？
+我们之前在_进程_那章里的学习过链接（links）。现在，随着注册表的完工，你也许会问：我们啥时候用监控器，啥时候用链接呢？
 
+链接是双向的。你将两个进程链接起来，其中一个挂了，另一个也会挂（除非它处理了该异常，改变了行为）。
+而监视机制是单向的：只有监视别人的进程会收到被监视的进程的消息。
+简单说，当你想让某些进程一挂都挂时，使用链接；而想要得到进程退出或挂了等事件的消息通知，使用监视。
 
+回到我们```handle_cast/2```的实现，你可以看到注册表是同时链接着且监视着派生出的bucket：
+```elixir
+{:ok, pid} = KV.Bucket.start_link()
+ref = Process.monitor(pid)
+```
 
+这是个坏主意。我们不想注册表进程因为某个bucket进程挂而一同挂掉！我们将在讲解监督者（supervisor）时探索更好的解决方法。
+一句话概括，我们将不直接创建新的进程，而是将把这个责任委托给监督者。
+就像我们即将看到的那样，监督者同链接工作在一起，这就解释了为啥基于链接的API（如```spawn_link```，```start_link```等）在Elixir和OTP上十分流行。
 
-
-
-
-
-
-
-
-
-
-
+在讲监督者之前，我们首先探索下使用GenEvent进行事件管理以和处理的知识。
