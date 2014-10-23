@@ -121,9 +121,9 @@ __Cast__是异步的，服务器__不会__发送回复消息。
 在服务器这边，我们要实现一系列服务器回调函数来实现服务器的启动、停止以及处理请求等。
 回调函数是可选的，我们在这里只实现所关系的那几个。
 
-第一个是```int/1```回调函数，它接受一个状态参数（你在用户API中调用```GenServer.start_link/3```中使用的那个），返回```{:ok, state}```。这里```state```是一个新建的```HashDict```。
+第一个是```init/1```回调函数，它接受一个状态参数（你在用户API中调用```GenServer.start_link/3```中使用的那个），返回```{:ok, state}```。这里```state```是一个新建的```HashDict```。
 我们现在已经可以观察到，GenServer的API中，客户端和服务器之间的界限十分明显。```start_link/3```在客户端发生。
-而其对应的```int/1```在服务器端运行。
+而其对应的```init/1```在服务器端运行。
 
 对于```call```请求，我们在服务器端必须实现```handle_call/3```回调函数。参数：接收某请求（那个元组）、请求来源(```_from```)以及当前服务器状态（```names```）。```handle_call/3```函数返回一个```{:reply, reply, new_state}```形式的元组。其中，```reply```是你要回复给客户端的东西，而```new_statue```是新的服务器状态。
 
@@ -135,7 +135,7 @@ __Cast__是异步的，服务器__不会__发送回复消息。
 
 ## 3.2-测试一个GenServer
 测试一个GenServer和测试agent比没有多少不同。我们在测试的setup回调中启动该服务器进程用以测试。
-用一下内容创建测试文件```test/kv/registry_test.exs```：
+用以下内容创建测试文件```test/kv/registry_test.exs```：
 ```elixir
 defmodule KV.RegistryTest do
   use ExUnit.Case, async: true
