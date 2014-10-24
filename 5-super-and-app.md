@@ -73,6 +73,57 @@ iex> KV.Registry.lookup(KV.Registry, "shopping")
 尽管在实战中，我们很少手动启动应用程序的监督者。相反，它的启动是应用程序回调的一部分。
 
 ## 5.2-理解应用程序
+我们已经在这个应用程序上花了很多时间。每次修改了一个文件，执行```mix compile```，我们都能看到```Generated kv.app```消息打印出来。
+
+我们可以在```_build/dev/lib/kv/ebin/kv.app```找到```.app```文件。我们来看一下它的内容：
+```elixir
+{application,kv,
+             [{registered,[]},
+              {description,"kv"},
+              {applications,[kernel,stdlib,elixir,logger]},
+              {vsn,"0.0.1"},
+              {modules,['Elixir.KV','Elixir.KV.Bucket',
+                        'Elixir.KV.Registry','Elixir.KV.Supervisor']}]}.
+```
+该文件包含Erlang的语句（使用Erlang的语法写的）。即使我们不熟悉Erlang，也能很容易猜到这个文件保存的是我们应用程序的定义。
+它包括应用程序的版本，定义的所有模块，还有它依赖的应用程序列表，如Erlang的Kernel，elixir本身，logger（我们在```mix.exs```里添加的）。
+
+要是每次我们添加一个新的模块就要手动修改这个文件，是很讨厌的。这也是为啥把它交给mix来自动维护的原因。
+
+我们可以通过修改```mix.exs```工程文件中```application/0```返回值的方法，配置产生的```.app```文件。我们可以以一个整体启动和停止应用程序。到目前为止我们还没有担心过这个问题，因为：  
+
+1. Mix为我们自动启动了应用程序
+2. 即使Mix不自动启动我们的程序，该程序启动时也不需要做啥特别的事儿
+
+总之，让我们看看Mix如何为我们启动应用程序，先启动工程下的命令行，然后试着：
+```elixir
+iex> Application.start(:kv)
+{:error, {:already_started, :kv}}
+```
+
+擦，已经启动了？
+
+我们可以给mix一个选项，让它不要启动我们的应用程序。命令：```iex -S mix run --no-start```：
+```elixir
+iex> Application.start(:kv)
+{:error, {:not_started, :logger}}
+```
+
+这次我们得到的错误是由于```:kv```所依赖的应用程序（这里是```:logger```）没有启动。
+Mix一般会根据工程中的```mix.exs```启动整个应用程序结构；对其依赖的每个应用程序来说也是这样（如果它们还依赖于其它应用程序）。
+但是这次我们用了```--no-start```标志，因此我们需要手动按顺序启动所有应用程序，或者像这样调用```Application.ensure_all_started```:
+```elixir
+iex> Application.ensure_all_started(:kv)
+{:ok, [:logger, :kv]}
+iex> Application.stop(:kv)
+18:12:10.698 [info] Application kv exited :stopped
+:ok
+```
+没什么激动人心的，但是这演示了如何控制我们的应用程序。
+
+>当你运行```iex -S mix```，它相当于```iex -S mix run```。因此无论何时你启动iex会话，传递参数给```mix run```，实际上是传递给```run```命令。你可以在命令行中执行```mix help run```获取关于```run```的更多信息。
+
+
 
 
 
