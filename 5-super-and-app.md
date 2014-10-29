@@ -183,6 +183,104 @@ Mix是区分工程（projects）和应用程序（applications）的。
 ## 5.3 简单的一对一监督者
 我们已经成功定义了我们的监督者，它作为我们应用程序生命周期的一部分自动启动（和停止）。
 
+回一下，我们的```KV.Registry```在```handle_cast/2```回调中，链接并且监视bucket进程：
+```elixir
+{:ok, pid} = KV.Bucket.start_link()
+ref = Process.monitor(pid)
+```
+链接是双向的，意味着一个bucket进程挂了会导致注册表进程挂掉。尽管现在我们有了监督者，它能保证一旦注册表进程挂了还可以重启，
+但是我们保存在bucket相应进程的数据还是会丢失。
+
+换句话说，我们希望即使bucket进程挂了，注册表进程也能够保持运行。写个测试：
+```elixir
+test "removes bucket on crash", %{registry: registry} do
+  KV.Registry.create(registry, "shopping")
+  {:ok, bucket} = KV.Registry.lookup(registry, "shopping")
+
+  # Kill the bucket and wait for the notification
+  Process.exit(bucket, :shutdown)
+  assert_receive {:exit, "shopping", ^bucket}
+  assert KV.Registry.lookup(registry, "shopping") == :error
+end
+```
+
+这个测试很像之前的“退出时移除bucket”，只是我们的做法更加有点问题。
+我们没有使用```Agent.stop/1```，而是发送了一个退出信号来关闭bucket进程。因为bucket是链接在注册表进程的，而注册表进程是连接着测试进程，让bucket挂回导致连测试进程都挂掉：
+```
+1) test removes bucket on crash (KV.RegistryTest)
+   test/kv/registry_test.exs:52
+   ** (EXIT from #PID<0.94.0>) shutdown
+```
+
+一个可行的解决方法是提供```KV.Bucket.start/0```，让它执行```Agent.start/1```。
+在注册表进程中使用这个方法启动bucket，从而去掉了它们之间的链接。
+但是这不是个好办法，因为这样bucket进程就链接不到任何进程。这意味着所有bucket进程即使在不可访问的状态下也一直活着。
+
+我们将定义一个新的监督者来解决这个问题。这个新监督者来派生和监督所有的bucket。
+有一个简单的一对一监督策略，叫做```:simple_one_for_one```，对于此情况是非常适用的：
+他允许指定一个工人模板，而后监督基于那个模板的多个孩子。
+
+让我们定义```KV.Bucket.Supervisor```：
+```elixir
+defmodule KV.Bucket.Supervisor do
+  use Supervisor
+
+  def start_link(opts \\ []) do
+    Supervisor.start_link(__MODULE__, :ok, opts)
+  end
+
+  def start_bucket(supervisor) do
+    Supervisor.start_child(supervisor, [])
+  end
+
+  def init(:ok) do
+    children = [
+      worker(KV.Bucket, [], restart: :temporary)
+    ]
+
+    supervise(children, strategy: :simple_one_for_one)
+  end
+end
+```
+
+比起之前的，这个监督者有两点改变。
+
+第一，我们定义了```start_bucket/1```函数，接受一个监督者id，并且启动一个bucket进程作为该监督者的孩子。```start_bucket/1```代替了之前在注册表进程中直接调用的```KV.Bucket.start_link```。
+
+第二，在```init/1```回调中，我们将工人标记为```:temporary```。意思是如果bucket挂了，它不会重启！
+这是因为我们只是想用监督者将bucket组织起来。创建bucket还得通过注册表进程。
+
+运行```iex -S mix```，试一试我们的新监督者：
+```elixir
+iex> {:ok, sup} = KV.Bucket.Supervisor.start_link
+{:ok, #PID<0.70.0>}
+iex> {:ok, bucket} = KV.Bucket.Supervisor.start_bucket(sup)
+{:ok, #PID<0.72.0>}
+iex> KV.Bucket.put(bucket, "eggs", 3)
+:ok
+iex> KV.Bucket.get(bucket, "eggs")
+3
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
