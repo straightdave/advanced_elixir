@@ -262,6 +262,86 @@ iex> KV.Bucket.get(bucket, "eggs")
 3
 ```
 
+现在来对注册表进程稍作修改，以配合bucket的监督者。
+我们会沿用和处理事件管理器时相同的策略，会显式地传递bucket的监督者的pid给```KV.Registery.start_link/3```。
+让我们先从修改```test/kv/registry_test.exs```中的Setup回调开始：
+```elixir
+setup do
+  {:ok, sup} = KV.Bucket.Supervisor.start_link
+  {:ok, manager} = GenEvent.start_link
+  {:ok, registry} = KV.Registry.start_link(manager, sup)
+
+  GenEvent.add_mon_handler(manager, Forwarder, self())
+  {:ok, registry: registry}
+end
+```
+接下来开始修改```KV.Registry```中的函数，将新监督者投入使用：
+```elixir
+## Client API
+
+@doc """
+Starts the registry.
+"""
+def start_link(event_manager, buckets, opts \\ []) do
+  # 1. Pass the buckets supevisor as argument
+  GenServer.start_link(__MODULE__, {event_manager, buckets}, opts)
+end
+
+## Server callbacks
+
+def init({events, buckets}) do
+  names = HashDict.new
+  refs  = HashDict.new
+  # 2. Store the buckets supevisor in the state
+  {:ok, %{names: names, refs: refs, events: events, buckets: buckets}}
+end
+
+def handle_cast({:create, name}, state) do
+  if HashDict.get(state.names, name) do
+    {:noreply, state}
+  else
+    # 3. Use the buckets supervisor instead of starting buckets directly
+    {:ok, pid} = KV.Bucket.Supervisor.start_bucket(state.buckets)
+    ref = Process.monitor(pid)
+    refs = HashDict.put(state.refs, ref, name)
+    names = HashDict.put(state.names, name, pid)
+    GenEvent.sync_notify(state.events, {:create, name, pid})
+    {:noreply, %{state | names: names, refs: refs}}
+  end
+end
+```
+改这些基本上就能让测试通过了。要完成任务，只需再修改下这个监督者，让原来bucket的那个监督者也成为它的孩子。
+
+## 5.4-监督树
+
+为了使用bucket的监督者，我们要把它作为一个孩子加到```KV.Supervisor```中去。
+注意，我们已经开始用一个监督者去监督另一个监督者了。正式的称呼是“监督树”。
+
+打开```lib/kv/supervisor.ex```，添加一个新的模块属性存储bucket监督者的名字，并且修改```init/1```：
+```elixir
+@manager_name KV.EventManager
+@registry_name KV.Registry
+@bucket_sup_name KV.Bucket.Supervisor
+
+def init(:ok) do
+  children = [
+    worker(GenEvent, [[name: @manager_name]]),
+    supervisor(KV.Bucket.Supervisor, [[name: @bucket_sup_name]]),
+    worker(KV.Registry, [@manager_name, @bucket_sup_name, [name: @registry_name]])
+  ]
+
+  supervise(children, strategy: :one_for_one)
+end
+```
+
+这一次，我们添加了一个监督者作为孩子，并且给了它一个名字```KV.Bucket.Supervisor```（和它的模块名相同）。
+我们还更新了```KV.Registry```这个工人，使它接受bucket监督者的名字作为参数。
+
+记住，声明各个孩子的顺序是很重要的。因为注册表进程依赖于bucket监督者，所以bucket监督者需要在孩子列表中排得靠前一些。
+
+因为我们已为监督者添加了多个孩子，现在就需要考虑使用```:one_for_one```这个策略还是否正确。
+一个显现的问题就是注册表进程和bucket监督者之间的关系。如果注册表进程挂了，bucket监督者也必须挂。
+因为一旦注册表进程挂了，所有关联bucket名字和其进程的信息也就丢失了。此时若bucket的监督者还活着，它掌管的众多
 
 
 
