@@ -121,6 +121,97 @@ you are looking for?
     (kv_server) lib/kv_server.ex:33: KVServer.serve/1
     (kv_server) lib/kv_server.ex:27: KVServer.loop_acceptor/1
 ```
+这是因为我们还期望从```:gen_tcp.recv/2```拿数据，但是客户端断了。我们将来要处理这个问题才行。
+
+目前还有个更重要的bug要修：假如TCP接收者挂了怎么办？意为它没有监督者，不会自己重启，要是挂了我们将不能在处理更多的请求。
+这就是为啥我们要将它挪进监督树。
+
+## 8.2-Tasks
+
+我们已经学习了Agent，通用服务器以及事件管理器。它们都可以进行多消息协作，或者管理状态。
+但是，若是只需要处理一些任务，选什么呢？
+
+[Task模块](http://elixir-lang.org/docs/stable/elixir/Task.html)为此提供了所需的功能。
+例如，它有```start_link/3```函数，接受一个模块名、一个函数和函数的参数，从而执行这个传入的函数，并且还是作为监督树的一部分。
+
+我们来试试。打开```lib/kv_server.ex```，修改下里```start/2```函数里的监督者：
+```elixir
+def start(_type, _args) do
+  import Supervisor.Spec
+
+  children = [
+    worker(Task, [KVServer, :accept, [4040]])
+  ]
+
+  opts = [strategy: :one_for_one, name: KVServer.Supervisor]
+  Supervisor.start_link(children, opts)
+end
+```
+
+改动的意思是要让```KVServer.accept(4040)```成为一个工人来运行。目前我们暂时hardcode这个端口号，之后再讨论如何修改。
+
+现在，这个服务器是监督树的一部分了，它应该会随着应用程序启动而自动运行。
+在终端中输入```mix run --no-halt```，然后再次用telnet客户端来试试看是否还一切正常：
+```
+$ telnet 127.0.0.1 4040
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+say you
+say you
+say me
+say me
+```
+看，它还是好使！这回就算退了客户端，服务器挂了，你会看到又一个立马起来了。嗯，不错。。。不过它可伸缩性如何？
+
+试着打开两个telnet客户端一起连接，你会注意到，第二个客户端根本不能回声：
+```
+$ telnet 127.0.0.1 4040
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+hello
+hello?
+HELLOOOOOO?
+```
+
+看起来根本不工作嘛。这是因为处理请求和接受请求是在同一个进程。一个客户端连上来，就没法处理第二个了。
+
+## 8.3-Task的监督者
+
+为了让我们的服务器能够处理并发连接，我们需要让一个进程来当接收者，然后派生其它的进程来服务接收到的连接。
+一个方案是：
+```elixir
+defp loop_acceptor(socket) do
+  {:ok, client} = :gen_tcp.accept(socket)
+  serve(client)
+  loop_acceptor(socket)
+end
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
