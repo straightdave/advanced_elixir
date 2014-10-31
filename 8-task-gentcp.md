@@ -189,37 +189,111 @@ defp loop_acceptor(socket) do
 end
 ```
 
+函数```Task.start_link/1```类似```Task.start_link/3```，但是它可以接受一个匿名函数而不是（模块，函数，参数）的组合：
+```elixir
+defp loop_acceptor(socket) do
+  {:ok, client} = :gen_tcp.accept(socket)
+  Task.start_link(fn -> serve(client) end)
+  loop_acceptor(socket)
+end
+```
 
+我们翻过这个错了，记得吗？
 
+和我们当时在注册表进程中调用```KV.Bucket.start_link/0```犯的错差不多。它意味着一个bucket挂会导致整个注册表进程挂。
 
+上面的代码页犯了相同的错误：如果我们把```serve(client)```这个任务和接收者连接起来，那么在处理请求时发生的小事故就会导致请求接收者挂，继而导致连接都挂掉。
 
+当时我们解决这个问题是用了一个简单的一对一监督者。这里我们也将使用相同的办法，除了一点：这个模式在Task中实在是太通用了，
+所有Task已经为之提供了一个解决方案---一个简单的一对一监督者加上临时工（临时的工人），这个我们在之前的监督树中就是这么用的。
 
+让我们再次修改下```start/2```函数，加个监督者：
+```elixir
+def start(_type, _args) do
+  import Supervisor.Spec
 
+  children = [
+    supervisor(Task.Supervisor, [[name: KVServer.TaskSupervisor]]),
+    worker(Task, [KVServer, :accept, [4040]])
+  ]
 
+  opts = [strategy: :one_for_one, name: KVServer.Supervisor]
+  Supervisor.start_link(children, opts)
+end
+```
 
+我们简单地启动了一个[```Task.Supervisor```](http://elixir-lang.org/docs/stable/elixir/Task.Supervisor.html)进程，
+名字叫```Task.Supervisor```。记住，因为接收者任务依赖于这个监督者，因此该监督者必须先启动。
 
+现在我们只需修改```loop_acceptor/2```，使用```Task.Supervisor```来处理每个请求：
+```elixir
+defp loop_acceptor(socket) do
+  {:ok, client} = :gen_tcp.accept(socket)
+  Task.Supervisor.start_child(KVServer.TaskSupervisor, fn -> serve(client) end)
+  loop_acceptor(socket)
+end
+```
 
+用命令```mix run --no-halt```启动新的服务器，现在就可以打开多个客户端来连接了。而且你会发现一个客户端退出不会让接收者挂掉。
+好棒！
 
+一下是完整的服务器实现，在单个模块中：
+```elixir
+defmodule KVServer do
+  use Application
 
+  @doc false
+  def start(_type, _args) do
+    import Supervisor.Spec
 
+    children = [
+      supervisor(Task.Supervisor, [[name: KVServer.TaskSupervisor]]),
+      worker(Task, [KVServer, :accept, [4040]])
+    ]
 
+    opts = [strategy: :one_for_one, name: KVServer.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
 
+  @doc """
+  Starts accepting connections on the given `port`.
+  """
+  def accept(port) do
+    {:ok, socket} = :gen_tcp.listen(port,
+                      [:binary, packet: :line, active: false])
+    IO.puts "Accepting connections on port #{port}"
+    loop_acceptor(socket)
+  end
 
+  defp loop_acceptor(socket) do
+    {:ok, client} = :gen_tcp.accept(socket)
+    Task.Supervisor.start_child(KVServer.TaskSupervisor, fn -> serve(client) end)
+    loop_acceptor(socket)
+  end
 
+  defp serve(socket) do
+    socket
+    |> read_line()
+    |> write_line(socket)
 
+    serve(socket)
+  end
 
+  defp read_line(socket) do
+    {:ok, data} = :gen_tcp.recv(socket, 0)
+    data
+  end
 
+  defp write_line(line, socket) do
+    :gen_tcp.send(socket, line)
+  end
+end
+```
 
+因为我们修改了监督者的需求，我们会问：我们的监督者策略还适用吗？
 
+这里答案是Yes：如果接收者挂了，现存的连接是没理由一起挂的。另一方面，如果task监督者挂了，同样也没必要让接收者挂掉。
+这和注册表进程那种情况相反，那种情况我们在一开始必须在注册表进程挂掉时让监督者也挂掉，直到后来我们用上了ETS来持久化保存状态。
+而task是没有状态什么的，挂掉一个两个也不会拖谁的后腿。
 
-
-
-
-
-
-
-
-
-
-
-
+下一章我们将开始解析客户请求，然后发送回复，从而完成我们的服务器。
