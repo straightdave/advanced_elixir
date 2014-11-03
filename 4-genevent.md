@@ -43,7 +43,7 @@ iex> flush
 :ok
 ```
 
-我们创建了一个处理器，并通过函数```GenEvent.add_handler/3```把它“加入”到事件管理器上，传递的三个参数是：  
+我们创建了一个处理器（handler），并通过函数```GenEvent.add_handler/3```把它“绑定”到事件管理器上，传递的三个参数是：  
 
 1. 刚启动的那个时间管理器
 2. 定义事件处理者的模块（如这里的```Forwarder```）
@@ -58,18 +58,18 @@ iex> flush
 3. ```notify/2```使事件处理器异步处理请求
 
 这里```sync_notify/2```和```notify/2```类似于GenServer里面的```call/2```和```cast/2```。推荐使用```sync_notify/2```。
-它以反向压力的机制工作，减少了“发消息快过消息被分发到处理者手中”的可能性。
+它以反向压力的机制工作，减少了“发消息速度快过消息被成功分发的速度”的可能性。
 
-记得去[GenServer的模块文档](http://elixir-lang.org/docs/stable/elixir/GenEvent.html)阅读其它一些函数。
+记得去[GenServer的模块文档](http://elixir-lang.org/docs/stable/elixir/GenEvent.html)阅读其它函数。
 目前我们的程序就用提到的这些知识就可以了。
 
 ## 4.2-注册表进程的事件
 
-为了能发出事件消息，我们要稍微修改一下我们的注册表进程，使之同一个事件管理器进行协作。
+为了能发出事件消息，我们要稍微修改一下我们的注册表进程，使之与一个事件管理器进行协作。
 我们需要在注册表进程启动的时候，事件管理器也能自动启动。
 比如在```init/1```回调里面，最好能传递事件处理器的pid或名字什么的作为参数来```start_link```，以此将启动事件管理器与注册表进程分解开。
 
-让我们首先修改测试中注册表进程的行为。打开```test/kv/registry_text.exs```，修改下目前的```setup```回调，然后再加上新的测试：
+但是，首先让我们修改测试中注册表进程的行为。打开```test/kv/registry_text.exs```，修改目前的```setup```回调，然后再加上新的测试：
 ```elixir
 defmodule Forwarder do
   use GenEvent
