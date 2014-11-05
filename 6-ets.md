@@ -426,11 +426,56 @@ end
 这之后，我们的测试应该都绿啦！
 
 现在只剩下一个场景需要考虑：一旦我们收到了ETS表，可能有现存的bucket的pid在这个表中。
-这是我们这次改动的目的。但是，新启动的注册表进程没有监视这些bucket，
+这是我们这次改动的目的。
+但是，新启动的注册表进程没有监视这些bucket，因为它们是作为之前的注册表的一部分创建的，现在那些注册表已经不存在了。
+这意味着表将被严重拖累，因为我们都不去清除已经挂掉的bucket。
 
+来增加一个测试来暴露这个bug：
+```elixir
+test "monitors existing entries", %{registry: registry, ets: ets} do
+  bucket = KV.Registry.create(registry, "shopping")
 
+  # Kill the registry. We unlink first, otherwise it will kill the test
+  Process.unlink(registry)
+  Process.exit(registry, :shutdown)
 
+  # Start a new registry with the existing table and access the bucket
+  start_registry(ets)
+  assert KV.Registry.lookup(ets, "shopping") == {:ok, bucket}
 
+  # Once the bucket dies, we should receive notifications
+  Process.exit(bucket, :shutdown)
+  assert_receive {:exit, "shopping", ^bucket}
+  assert KV.Registry.lookup(ets, "shopping") == :error
+end
+```
+
+执行这个测试，它将失败：
+```
+1) test monitors existing entries (KV.RegistryTest)
+   test/kv/registry_test.exs:72
+   No message matching {:exit, "shopping", ^bucket}
+   stacktrace:
+     test/kv/registry_test.exs:85
+```
+
+这是我们期望的。如果bucket不被监视，在它挂的时候，注册表将得不到通知，因此也没有事件发生。
+我们可以修改```KV.Registry```的```init/1```回调来修复这个问题。给所有表中的现存条目设置监视器：
+```elixir
+def init({table, events, buckets}) do
+  refs = :ets.foldl(fn {name, pid}, acc ->
+    HashDict.put(acc, Process.monitor(pid), name)
+  end, HashDict.new, table)
+
+  {:ok, %{names: table, refs: refs, events: events, buckets: buckets}}
+end
+```
+
+我们用```:ets.foldl/3```来遍历表中所有条目，类似于```Enum.reduce/3```。它为每个条目执行提供的函数，并且用一个累加器累加结果。
+在函数回调中，我们监视每个表中的pid，并相应地更新存放引用信息的字典。
+如果有某个条目是挂掉的，我们还能收到```:DOWN```消息，稍后可以清除它们。
+
+本章通过让监督者拥有ETS表，并且传递给注册表，我们让程序更加健壮了。
 
 
 
