@@ -1,2 +1,93 @@
-7-依赖和伞程序
+7-依赖和伞工程
 ==============
+
+[外部依赖]()  
+[内部依赖]()  
+[伞工程]()  
+[在伞依赖之中]()  
+[总结]()  
+
+本章我们简短地讨论在Mix中如何管理依赖。
+
+我们的应用程序```kv```完成了，现在是时候实现我们第一章提到的那个处理请求的服务器了：
+```
+CREATE shopping
+OK
+
+PUT shopping milk 1
+OK
+
+PUT shopping eggs 3
+OK
+
+GET shopping milk
+1
+OK
+
+DELETE shopping eggs
+OK
+```
+
+我们不会再往```kv```应用程序中添加代码，而是来创建一个TCP服务器作为```kv```的客户端。
+因为整个Elixir生态系统被设定为更加适应应用程序。因此我们最好是把工程分成小的应用程序，而不是大一统。
+
+在创建新的应用程序之前，我们必须先来讨论Mix如何处理依赖。
+实际中，我们会遇到两种依赖：内部的和外部的。Mix都支持。
+
+## 7.1-外部依赖
+
+外部的依赖不是你整的。比如，你要发布的KV程序，它需要HTTP的API，你可以用[Plug](http://github.com/elixir-lang/plug)作为一个外部依赖。
+
+安装外部依赖很简单。通常我们使用[Hex包管理器](http://hex.pm/)。你只要在```mix.exs```中的deps函数中列出依赖：
+```elixir
+def deps do
+  [{:plug, "~> 0.5.0"}]
+end
+```
+
+这个依赖引用的是plug在0.5.x系列版本中最新推送给Hex的一个。```~>```后面跟着版本数字。更多关于如何指定某特定版本的信息，请参考[Version模块文档](http://elixir-lang.org/docs/stable/elixir/Version.html)。
+
+通常推给Hex的都是稳定的发行版。如果你想依赖的是正在开发中的最新版本，那么Mix还支持你引用git中的相应repo：
+```elixir
+def deps do
+  [{:plug, git: "git://github.com/elixir-lang/plug.git"}]
+end
+```
+
+你会注意到，当你给你的工程加了一个依赖后，Mix会生成了一个```mix.lock```文件，用该文件确保_可重复的构建_。
+lock文件必须ckeckin到你的版本管理系统中去，来保证任何使用这个工程的人都拥有和你同样的依赖的版本。
+
+Mix提供了很多依赖相关的操作，可以用```mix help```查看：
+```elixir
+$ mix help
+mix deps              # List dependencies and their status
+mix deps.clean        # Remove the given dependencies' files
+mix deps.compile      # Compile dependencies
+mix deps.get          # Get all out of date dependencies
+mix deps.unlock       # Unlock the given dependencies
+mix deps.update       # Update the given dependencies
+```
+
+最常用的操作是```mix deps.get```和```mix deps.update```。
+一旦获取了依赖程序，这些程序会自动被编译好供你使用。
+关于deps操作，可以通过```mix help deps```或者[Mix.Tasks.Deps模块文档](http://elixir-lang.org/docs/stable/mix/Mix.Tasks.Deps.html)阅读更多信息。
+
+## 7.2-内部依赖
+
+内部的依赖指的是你在同一个工程中的某个程序。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
