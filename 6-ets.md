@@ -197,11 +197,63 @@ assert {:ok, bucket} = KV.Registry.lookup(ets, "shopping")
 ## 6.2-竞争条件？
 用Elixir编程不会让你避免竞争状态。但是Elixir关于“没啥是共享”的这个特点可以帮助你很容易找到导致竞争状态的根本原因。
 
+我们测试中发生的事儿是__延迟__---介于我们操作和我们观察到ETS表被改动之间。下面是我们期望发生的：  
+1. 我们执行```KV.Registry.create(registry, "shopping")```  
+2. 注册表进程创建了bucket，并且更新了缓存表  
+3. 我们用```KV.Registry.lookup(ets, "shopping")```从表中获取信息  
+4. 上面的命令返回```{:ok, bucket}```  
 
+但是，因为```KV.Registry.create/2```使用cast操作，命令在真正修改表之前先返回了结果！换句话说，其实发生了下面的事：  
+1. 我们执行```KV.Registry.create(registry, "shopping")```  
+2. 我们用```KV.Registry.lookup(ets, "shopping")```从表中获取信息  
+3. 命令返回```:error```  
+4. 注册表进程创建了bucket，并且更新了缓存表  
 
+要修复这个问题，只需要让```KV.Registry.create/2```同步操作，使用```call/2```而不是```cast/2```。
+这就能保证客户端只会在表被修改后才能继续下面的操作。让我们来修改相应函数和回调：
+```elixir
+def create(server, name) do
+  GenServer.call(server, {:create, name})
+end
 
+def handle_call({:create, name}, _from, state) do
+  case lookup(state.names, name) do
+    {:ok, pid} ->
+      {:reply, pid, state} # Reply with pid
+    :error ->
+      {:ok, pid} = KV.Bucket.Supervisor.start_bucket(state.buckets)
+      ref = Process.monitor(pid)
+      refs = HashDict.put(state.refs, ref, name)
+      :ets.insert(state.names, {name, pid})
+      GenEvent.sync_notify(state.events, {:create, name, pid})
+      {:reply, pid, %{state | refs: refs}} # Reply with pid
+  end
+end
+```
 
+我们只是简单地把回调里的```handle_cast/2```改成了```handle_call/3```，并且返回创建的bucket的pid。
 
+现在执行下测试。这次，我们要使用```--trace```选项：
+```elixir
+$ mix test --trace
+```
+
+如果你的测试中有死锁或者竞争条件时，```--trace```选项非常有用。因为它可以同步执行所有测试（而```async: true```没啥效果），并且显式每条测试的详细信息。这次我们应该只有一条失败（可能也是间歇性的）：
+```
+1) test removes buckets on exit (KV.RegistryTest)
+   test/kv/registry_test.exs:48
+   Assertion with == failed
+   code: KV.Registry.lookup(ets, "shopping") == :error
+   lhs:  {:ok, #PID<0.103.0>}
+   rhs:  :error
+   stacktrace:
+     test/kv/registry_test.exs:52
+```
+
+根据错误信息，我们期望表中没有bucket，但是它却有。
+这个问题和我们刚刚解决的相反：之前的问题是创建bucket的命令与更新表之间的延迟，而现在是bucket处理退出操作与清除它在表中的记录之间的延迟。
+
+不幸的是，
 
 
 
