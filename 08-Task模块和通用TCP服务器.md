@@ -1,4 +1,4 @@
-8-Task和gen_tcp
+8-Task模块和通用TCP服务器（gen_tcp）
 ================
 * [Echo服务器]()  
 * [Tasks]()
